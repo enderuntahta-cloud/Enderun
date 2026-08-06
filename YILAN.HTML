@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake.IO - Pro Sürüm (Sonsuz Dünya)</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            z-index: 10;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px #000;
+        }
+        .score-board {
+            background: rgba(0,0,0,0.6);
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .boost-bar-container {
+            width: 200px;
+            height: 15px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 10px;
+            overflow: hidden;
+            border: 2px solid #fff;
+        }
+        #boostBar {
+            width: 100%;
+            height: 100%;
+            background: #2ed573;
+            transition: background-color 0.2s;
+        }
+        .controls-info {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #ccc;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div class="score-board">Skor: <span id="scoreDisplay">0</span></div>
+        <div class="boost-bar-container">
+            <div id="boostBar"></div>
+        </div>
+        <div class="controls-info">Yön: Fare | Hızlanma: Boşluk (Space)</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let width, height;
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Oyun Ayarları
+    const FOOD_COUNT = 500;
+    const BOT_COUNT = 20;
+    
+    // Kamera
+    let camX = 0, camY = 0;
+
+    // Renk Paleti
+    const colors = ['#ff4757', '#2ed573', '#1e90ff', '#ffa502', '#ff6348', '#a4b0be', '#e056fd', '#00d8d6'];
+
+    // Yemler
+    let foods = [];
+
+    // Sonsuz dünya için dinamik yem oluşturma
+    function spawnFood(x, y, isSpecial = false) {
+        // Eğer kordinat verilmemişse oyuncunun veya bir botun etrafında oluştur
+        if (x === undefined || y === undefined) {
+            let target = player;
+            if (Math.random() > 0.3 && bots.length > 0) {
+                target = bots[Math.floor(Math.random() * bots.length)];
+            }
+            x = target.x + (Math.random() - 0.5) * 3500;
+            y = target.y + (Math.random() - 0.5) * 3500;
+        }
+        
+        foods.push({
+            x: x,
+            y: y,
+            color: isSpecial ? '#fff' : colors[Math.floor(Math.random() * colors.length)],
+            radius: isSpecial ? 5 : (Math.random() * 3 + 3),
+            isSpecial: isSpecial
+        });
+    }
+
+    // Yılan Sınıfı
+    class Snake {
+        constructor(x, y, isPlayer) {
+            this.x = x;
+            this.y = y;
+            this.history = []; 
+            this.length = 30; // Başlangıç uzunluğu
+            this.radius = 15;
+            this.baseSpeed = 4;
+            this.boostSpeed = 9;
+            this.speed = this.baseSpeed;
+            this.angle = 0;
+            this.targetAngle = 0;
+            this.color = colors[Math.floor(Math.random() * colors.length)];
+            this.isPlayer = isPlayer;
+            this.dead = false;
+            
+            // Hızlanma (Boost) Değişkenleri
+            this.isBoosting = false;
+            this.boostFuel = 300; // 60 FPS * 5 saniye = 300 frame
+            this.maxBoostFuel = 300;
+            this.dropFoodTimer = 0;
+            
+            // Profesyonel Bot Ayarları
+            this.turnSpeed = isPlayer ? 0.15 : 0.12; 
+        }
+
+        update(mouseX, mouseY, allSnakes) {
+            if (this.dead) return;
+
+            // Hızlanma (Boost) Mantığı
+            if (this.isBoosting && this.boostFuel > 0 && this.length > 15) {
+                this.speed = this.boostSpeed;
+                this.boostFuel--;
+                this.dropFoodTimer++;
+                
+                // Hızlanırken arkadan azalma ve yem bırakma
+                if (this.dropFoodTimer > 8) {
+                    this.length -= 1;
+                    this.dropFoodTimer = 0;
+                    if (this.history.length > 0) {
+                        let tail = this.history[this.history.length - 1];
+                        spawnFood(tail.x, tail.y, true); // Özel parlayan yem bırak
+                    }
+                }
+            } else {
+                this.speed = this.baseSpeed;
+                this.isBoosting = false;
+                if (this.boostFuel < this.maxBoostFuel) this.boostFuel += 0.5; // Yavaşça dolar
+            }
+
+            // PRO YAPAY ZEKA (Bot) Mantığı
+            if (!this.isPlayer) {
+                let lookAheadX = this.x + Math.cos(this.angle) * 150;
+                let lookAheadY = this.y + Math.sin(this.angle) * 150;
+                let danger = null;
+                let prey = null;
+
+                // 1. Tehlike Algılama (Önünde yılan gövdesi var mı?)
+                for (let s of allSnakes) {
+                    if (s.dead) continue;
+                    for (let i = 0; i < s.history.length; i += 8) { // Performans için her 8. boğuma bak
+                        let pt = s.history[i];
+                        if (Math.hypot(lookAheadX - pt.x, lookAheadY - pt.y) < 60) {
+                            danger = pt;
+                            break;
+                        }
+                    }
+                    if (danger) break;
+                }
+
+                // 2. Av veya Yem Arama
+                if (!danger) {
+                    // Yakındaki zayıf yılanları ara (Önünü kesmek için)
+                    for (let s of allSnakes) {
+                        if (s === this || s.dead) continue;
+                        let dist = Math.hypot(this.x - s.x, this.y - s.y);
+                        // Eğer rakip yakınsa ve benim boyum ondan biraz büyükse veya kafa kafayaysak
+                        if (dist < 400 && this.length > 20) {
+                            prey = s;
+                            break;
+                        }
+                    }
+                }
+
+                // AI Karar Mekanizması
+                if (danger) {
+                    // Tehlikeden keskin bir şekilde kaç
+                    let escapeAngle = Math.atan2(danger.y - this.y, danger.x - this.x);
+                    this.targetAngle = escapeAngle + Math.PI/2 + (Math.random()*0.5); // 90 derece sağa/sola kır
+                    this.isBoosting = false;
+                } else if (prey) {
+                    // Profesyonel Saldırı: Rakibin gideceği noktanın önüne kırmaya çalış
+                    let interceptX = prey.x + Math.cos(prey.angle) * 100;
+                    let interceptY = prey.y + Math.sin(prey.angle) * 100;
+                    this.targetAngle = Math.atan2(interceptY - this.y, interceptX - this.x);
+                    // Rakibe saldırırken boost kullan!
+                    this.isBoosting = (Math.hypot(this.x - prey.x, this.y - prey.y) < 200 && this.boostFuel > 100);
+                } else {
+                    // Serbest Dolaşım & Yem Toplama
+                    this.isBoosting = false;
+                    // En yakın yemi bul (Sadece yakın çevreyi tara)
+                    let closestFood = null;
+                    let minDist = 800;
+                    for (let f of foods) {
+                        let d = Math.hypot(this.x - f.x, this.y - f.y);
+                        if (d < minDist) {
+                            minDist = d;
+                            closestFood = f;
+                        }
+                    }
+                    if (closestFood) {
+                        this.targetAngle = Math.atan2(closestFood.y - this.y, closestFood.x - this.x);
+                    } else {
+                        // Eğer yem yoksa merkeze (oyuncuya doğru) hafifçe yönel
+                        if (Math.random() < 0.05 && !player.dead) {
+                            this.targetAngle = Math.atan2(player.y - this.y, player.x - this.x);
+                        }
+                    }
+                }
+            } else {
+                // Oyuncu Mantığı (Fareye doğru dön)
+                let worldMouseX = mouseX + camX;
+                let worldMouseY = mouseY + camY;
+                this.targetAngle = Math.atan2(worldMouseY - this.y, worldMouseX - this.x);
+            }
+
+            // Açıyı yumuşak döndür
+            let diff = this.targetAngle - this.angle;
+            diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // Normalize
+            this.angle += diff * this.turnSpeed;
+
+            // İleri hareket
+            this.x += Math.cos(this.angle) * this.speed;
+            this.y += Math.sin(this.angle) * this.speed;
+
+            // Geçmişi kaydet (vücut takibi için) ve boyutu koru
+            this.history.unshift({x: this.x, y: this.y});
+            while (this.history.length > this.length) {
+                this.history.pop();
+            }
+        }
+
+        draw() {
+            if (this.dead || this.history.length === 0) return;
+
+            // Sadece ekranda olanları çiz (Performans)
+            if (this.x < camX - 500 || this.x > camX + width + 500 || 
+                this.y < camY - 500 || this.y > camY + height + 500) {
+                return;
+            }
+
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            // Gölge / Kenarlık efekti
+            ctx.lineWidth = this.radius * 2;
+            ctx.strokeStyle = '#000';
+            ctx.beginPath();
+            for (let i = 0; i < this.history.length; i += 3) {
+                let pt = this.history[i];
+                if (i === 0) ctx.moveTo(pt.x - camX, pt.y - camY);
+                else ctx.lineTo(pt.x - camX, pt.y - camY);
+            }
+            ctx.stroke();
+
+            // İç renk
+            ctx.lineWidth = this.radius * 2 - 4;
+            ctx.strokeStyle = this.color;
+            ctx.beginPath();
+            for (let i = 0; i < this.history.length; i += 3) {
+                let pt = this.history[i];
+                if (i === 0) ctx.moveTo(pt.x - camX, pt.y - camY);
+                else ctx.lineTo(pt.x - camX, pt.y - camY);
+            }
+            ctx.stroke();
+
+            // Gözler
+            ctx.fillStyle = 'white';
+            let eyeOffsetX = Math.cos(this.angle + Math.PI/2) * (this.radius/2.2);
+            let eyeOffsetY = Math.sin(this.angle + Math.PI/2) * (this.radius/2.2);
+            
+            ctx.beginPath(); // Sol Göz
+            ctx.arc(this.x - camX + eyeOffsetX, this.y - camY + eyeOffsetY, 5, 0, Math.PI*2);
+            ctx.fill();
+            ctx.beginPath(); // Sağ Göz
+            ctx.arc(this.x - camX - eyeOffsetX, this.y - camY - eyeOffsetY, 5, 0, Math.PI*2);
+            ctx.fill();
+            
+            // Gözbebekleri (Yönü gösterir, saldırı anında kızarır)
+            ctx.fillStyle = this.isBoosting ? '#ff0000' : 'black';
+            let pupilX = Math.cos(this.angle) * 2;
+            let pupilY = Math.sin(this.angle) * 2;
+            ctx.beginPath();
+            ctx.arc(this.x - camX + eyeOffsetX + pupilX, this.y - camY + eyeOffsetY + pupilY, 2.5, 0, Math.PI*2);
+            ctx.arc(this.x - camX - eyeOffsetX + pupilX, this.y - camY - eyeOffsetY + pupilY, 2.5, 0, Math.PI*2);
+            ctx.fill();
+        }
+
+        die() {
+            this.dead = true;
+            // Ölünce tüm vücudu yeme dönüşür
+            for(let i=0; i<this.history.length; i+=4) {
+                spawnFood(this.history[i].x, this.history[i].y, true); // Ölen yılanlar parlak yem bırakır
+            }
+        }
+    }
+
+    let player = new Snake(0, 0, true);
+    let bots = [];
+    
+    function spawnBot() {
+        // Botları oyuncunun uzağında ama tamamen de kaybolmayacakları bir mesafede yarat
+        let bx = player.x + (Math.random() > 0.5 ? 1 : -1) * (1000 + Math.random() * 2000);
+        let by = player.y + (Math.random() > 0.5 ? 1 : -1) * (1000 + Math.random() * 2000);
+        let bot = new Snake(bx, by, false);
+        bot.length = 30 + Math.random() * 50; // Botlar rastgele boylarda başlar
+        bots.push(bot);
+    }
+
+    // İlk botları ve yemleri yarat
+    for(let i=0; i<BOT_COUNT; i++) spawnBot();
+    for(let i=0; i<FOOD_COUNT; i++) spawnFood();
+
+    // Girdi Takibi (Fare ve Klavye)
+    let mouseX = width/2;
+    let mouseY = height/2;
+    let spacePressed = false;
+
+    window.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if(e.code === 'Space') spacePressed = true;
+    });
+    
+    window.addEventListener('keyup', (e) => {
+        if(e.code === 'Space') spacePressed = false;
+    });
+
+    // Oyun Döngüsü
+    function gameLoop() {
+        ctx.clearRect(0, 0, width, height);
+
+        // Sonsuz Arka Plan Izgarası
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.lineWidth = 1;
+        let gridSize = 60;
+        let offsetX = camX % gridSize;
+        let offsetY = camY % gridSize;
+        
+        ctx.beginPath();
+        for (let x = -offsetX; x < width; x += gridSize) {
+            ctx.moveTo(x, 0); ctx.lineTo(x, height);
+        }
+        for (let y = -offsetY; y < height; y += gridSize) {
+            ctx.moveTo(0, y); ctx.lineTo(width, y);
+        }
+        ctx.stroke();
+
+        let allAliveSnakes = [player, ...bots].filter(s => !s.dead);
+
+        if (!player.dead) {
+            // Kamerayı yumuşak bir şekilde oyuncuya takip ettir
+            camX += ((player.x - width/2) - camX) * 0.1;
+            camY += ((player.y - height/2) - camY) * 0.1;
+            
+            player.isBoosting = spacePressed;
+            player.update(mouseX, mouseY, allAliveSnakes);
+
+            // Arayüz Güncelleme
+            document.getElementById('scoreDisplay').innerText = Math.max(0, Math.floor((player.length - 30) * 10));
+            
+            let boostPct = (player.boostFuel / player.maxBoostFuel) * 100;
+            let bar = document.getElementById('boostBar');
+            bar.style.width = boostPct + '%';
+            if(boostPct < 20) bar.style.backgroundColor = '#ff4757';
+            else if(player.isBoosting) bar.style.backgroundColor = '#ffa502';
+            else bar.style.backgroundColor = '#2ed573';
+            
+        } else {
+            document.getElementById('scoreDisplay').innerText = "ÖLDÜN! Sayfayı yenile.";
+            document.getElementById('boostBar').style.width = '0%';
+        }
+
+        // Yemleri Çiz ve Kontrol Et
+        for (let i = foods.length - 1; i >= 0; i--) {
+            let f = foods[i];
+            let onScreen = (f.x > camX - 50 && f.x < camX + width + 50 && f.y > camY - 50 && f.y < camY + height + 50);
+            
+            // Eğer yem oyuncudan ÇOK uzaklaştıysa (Sonsuz dünya mantığı), onu sil ve oyuncunun yakınına yeniden yarat
+            if (!player.dead && Math.hypot(f.x - player.x, f.y - player.y) > 4000) {
+                foods.splice(i, 1);
+                spawnFood();
+                continue;
+            }
+
+            if(onScreen) {
+                ctx.fillStyle = f.color;
+                ctx.beginPath();
+                ctx.arc(f.x - camX, f.y - camY, f.radius, 0, Math.PI*2);
+                ctx.fill();
+                if(f.isSpecial) {
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = f.color;
+                    ctx.fillStyle = '#fff';
+                    ctx.fill();
+                    ctx.shadowBlur = 0; // Sıfırla ki diğer çizimler bozulmasın
+                }
+            }
+
+            // Yem yeme kontrolü
+            for(let s of allAliveSnakes) {
+                let dist = Math.hypot(s.x - f.x, s.y - f.y);
+                if (dist < s.radius + f.radius) {
+                    s.length += f.isSpecial ? 4 : 2; // Parlayan (özel) yemler daha çok büyütür
+                    s.radius = Math.min(15 + (s.length * 0.05), 35); // Büyüdükçe hafif kalınlaşır
+                    foods.splice(i, 1);
+                    spawnFood(); 
+                    break;
+                }
+            }
+        }
+
+        // Botları Güncelle
+        for (let i = bots.length - 1; i >= 0; i--) {
+            let b = bots[i];
+            b.update(0, 0, allAliveSnakes); // Botlar kendi hedefini kendi belirliyor
+            
+            // Çok uzaklaşan botları silip oyuncunun yakınına tekrar doğur
+            if (!player.dead && Math.hypot(b.x - player.x, b.y - player.y) > 5000) {
+                b.dead = true;
+            }
+            
+            if (b.dead) {
+                bots.splice(i, 1);
+                setTimeout(spawnBot, 1000);
+            }
+        }
+
+        // ÇARPISMA KONTROLÜ (Baş -> Gövde)
+        for(let attacker of allAliveSnakes) {
+            for(let defender of allAliveSnakes) {
+                if(attacker === defender) continue;
+                
+                // Kafa kafaya yakınken haksız ölümleri engellemek için ilk 10 boğumu atla
+                for(let i = 10; i < defender.history.length; i+=4) {
+                    let part = defender.history[i];
+                    let dist = Math.hypot(attacker.x - part.x, attacker.y - part.y);
+                    
+                    if (dist < attacker.radius + defender.radius - 8) {
+                        attacker.die();
+                        break;
+                    }
+                }
+                if(attacker.dead) break;
+            }
+        }
+
+        // Çizim Sırası: Önce botlar, sonra oyuncu (Oyuncu hep üstte)
+        bots.forEach(b => b.draw());
+        player.draw();
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    gameLoop();
+</script>
+</body>
+</html>
